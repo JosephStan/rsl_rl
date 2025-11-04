@@ -9,7 +9,6 @@ import os
 import time
 import torch
 from collections import deque
-from tensordict import TensorDict
 
 import rsl_rl
 from rsl_rl.algorithms import Distillation
@@ -22,29 +21,29 @@ from rsl_rl.utils import resolve_obs_groups, store_code_state
 class DistillationRunner(OnPolicyRunner):
     """On-policy runner for training and evaluation of teacher-student training."""
 
-    def __init__(self, env: VecEnv, train_cfg: dict, log_dir: str | None = None, device: str = "cpu") -> None:
+    def __init__(self, env: VecEnv, train_cfg: dict, log_dir: str | None = None, device="cpu"):
         self.cfg = train_cfg
         self.alg_cfg = train_cfg["algorithm"]
         self.policy_cfg = train_cfg["policy"]
         self.device = device
         self.env = env
 
-        # Check if multi-GPU is enabled
+        # check if multi-gpu is enabled
         self._configure_multi_gpu()
 
-        # Store training configuration
+        # store training configuration
         self.num_steps_per_env = self.cfg["num_steps_per_env"]
         self.save_interval = self.cfg["save_interval"]
 
-        # Query observations from environment for algorithm construction
+        # query observations from environment for algorithm construction
         obs = self.env.get_observations()
         self.cfg["obs_groups"] = resolve_obs_groups(obs, self.cfg["obs_groups"], default_sets=["teacher"])
 
-        # Create the algorithm
+        # create the algorithm
         self.alg = self._construct_algorithm(obs)
 
         # Decide whether to disable logging
-        # Note: We only log from the process with rank 0 (main process)
+        # We only log from the process with rank 0 (main process)
         self.disable_logs = self.is_distributed and self.gpu_global_rank != 0
 
         # Logging
@@ -55,20 +54,20 @@ class DistillationRunner(OnPolicyRunner):
         self.current_learning_iteration = 0
         self.git_status_repos = [rsl_rl.__file__]
 
-    def learn(self, num_learning_iterations: int, init_at_random_ep_len: bool = False) -> None:
-        # Initialize writer
+    def learn(self, num_learning_iterations: int, init_at_random_ep_len: bool = False):  # noqa: C901
+        # initialize writer
         self._prepare_logging_writer()
-        # Check if teacher is loaded
-        if not self.alg.policy.loaded_teacher:
-            raise ValueError("Teacher model parameters not loaded. Please load a teacher model to distill.")
+        # check if teacher is loaded
+        # if not self.alg.policy.loaded_teacher:
+        #     raise ValueError("Teacher model parameters not loaded. Please load a teacher model to distill.")
 
-        # Randomize initial episode lengths (for exploration)
+        # randomize initial episode lengths (for exploration)
         if init_at_random_ep_len:
             self.env.episode_length_buf = torch.randint_like(
                 self.env.episode_length_buf, high=int(self.env.max_episode_length)
             )
 
-        # Start learning
+        # start learning
         obs = self.env.get_observations().to(self.device)
         self.train_mode()  # switch to train mode (for dropout for example)
 
@@ -87,47 +86,49 @@ class DistillationRunner(OnPolicyRunner):
         # Start training
         start_iter = self.current_learning_iteration
         tot_iter = start_iter + num_learning_iterations
+        self.alg.act(obs)
         for it in range(start_iter, tot_iter):
             start = time.time()
             # Rollout
             with torch.inference_mode():
-                for _ in range(self.num_steps_per_env):
-                    # Sample actions
-                    actions = self.alg.act(obs)
-                    # Step the environment
-                    obs, rewards, dones, extras = self.env.step(actions.to(self.env.device))
-                    # Move to device
-                    obs, rewards, dones = (obs.to(self.device), rewards.to(self.device), dones.to(self.device))
-                    # Process the step
-                    self.alg.process_env_step(obs, rewards, dones, extras)
-                    # Book keeping
-                    if self.log_dir is not None:
-                        if "episode" in extras:
-                            ep_infos.append(extras["episode"])
-                        elif "log" in extras:
-                            ep_infos.append(extras["log"])
-                        # Update rewards
-                        cur_reward_sum += rewards
-                        # Update episode length
-                        cur_episode_length += 1
-                        # Clear data for completed episodes
-                        new_ids = (dones > 0).nonzero(as_tuple=False)
-                        rewbuffer.extend(cur_reward_sum[new_ids][:, 0].cpu().numpy().tolist())
-                        lenbuffer.extend(cur_episode_length[new_ids][:, 0].cpu().numpy().tolist())
-                        cur_reward_sum[new_ids] = 0
-                        cur_episode_length[new_ids] = 0
+                # for _ in range(self.num_steps_per_env):
+                #     # Sample actions
+                #     actions = self.alg.act(obs)
+                #     # Step the environment
+                #     obs, rewards, dones, extras = self.env.step(actions.to(self.env.device))
+                #     print("Step observation keys:", obs.keys())
+                #     # Move to device
+                #     obs, rewards, dones = (obs.to(self.device), rewards.to(self.device), dones.to(self.device))
+                #     # process the step
+                #     self.alg.process_env_step(obs, rewards, dones, extras)
+                #     # book keeping
+                #     if self.log_dir is not None:
+                #         if "episode" in extras:
+                #             ep_infos.append(extras["episode"])
+                #         elif "log" in extras:
+                #             ep_infos.append(extras["log"])
+                #         # Update rewards
+                #         cur_reward_sum += rewards
+                #         # Update episode length
+                #         cur_episode_length += 1
+                #         # Clear data for completed episodes
+                #         new_ids = (dones > 0).nonzero(as_tuple=False)
+                #         rewbuffer.extend(cur_reward_sum[new_ids][:, 0].cpu().numpy().tolist())
+                #         lenbuffer.extend(cur_episode_length[new_ids][:, 0].cpu().numpy().tolist())
+                #         cur_reward_sum[new_ids] = 0
+                #         cur_episode_length[new_ids] = 0
 
                 stop = time.time()
                 collection_time = stop - start
                 start = stop
 
-            # Update policy
+            # update policy
             loss_dict = self.alg.update()
 
             stop = time.time()
             learn_time = stop - start
             self.current_learning_iteration = it
-
+            # log info
             if self.log_dir is not None and not self.disable_logs:
                 # Log information
                 self.log(locals())
@@ -139,9 +140,9 @@ class DistillationRunner(OnPolicyRunner):
             ep_infos.clear()
             # Save code state
             if it == start_iter and not self.disable_logs:
-                # Obtain all the diff files
+                # obtain all the diff files
                 git_file_paths = store_code_state(self.log_dir, self.git_status_repos)
-                # If possible store them to wandb or neptune
+                # if possible store them to wandb
                 if self.logger_type in ["wandb", "neptune"] and git_file_paths:
                     for path in git_file_paths:
                         self.writer.save_file(path)
@@ -150,21 +151,25 @@ class DistillationRunner(OnPolicyRunner):
         if self.log_dir is not None and not self.disable_logs:
             self.save(os.path.join(self.log_dir, f"model_{self.current_learning_iteration}.pt"))
 
-    def _construct_algorithm(self, obs: TensorDict) -> Distillation:
+    """
+    Helper methods.
+    """
+
+    def _construct_algorithm(self, obs) -> Distillation:
         """Construct the distillation algorithm."""
-        # Initialize the policy
+        # initialize the actor-critic
         student_teacher_class = eval(self.policy_cfg.pop("class_name"))
         student_teacher: StudentTeacher | StudentTeacherRecurrent = student_teacher_class(
             obs, self.cfg["obs_groups"], self.env.num_actions, **self.policy_cfg
         ).to(self.device)
 
-        # Initialize the algorithm
+        # initialize the algorithm
         alg_class = eval(self.alg_cfg.pop("class_name"))
         alg: Distillation = alg_class(
             student_teacher, device=self.device, **self.alg_cfg, multi_gpu_cfg=self.multi_gpu_cfg
         )
 
-        # Initialize the storage
+        # initialize the storage
         alg.init_storage(
             "distillation",
             self.env.num_envs,

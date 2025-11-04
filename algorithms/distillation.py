@@ -30,6 +30,7 @@ class Distillation:
         device: str = "cpu",
         # Distributed training parameters
         multi_gpu_cfg: dict | None = None,
+        imitation_dataset_path: str | None = None,
     ) -> None:
         # Device-related parameters
         self.device = device
@@ -47,6 +48,7 @@ class Distillation:
         self.policy = policy
         self.policy.to(self.device)
         self.storage = None  # Initialized later
+        self.imitation_dataset_path = imitation_dataset_path
 
         # Initialize the optimizer
         self.optimizer = resolve_optimizer(optimizer)(self.policy.parameters(), lr=learning_rate)
@@ -89,6 +91,7 @@ class Distillation:
             obs,
             actions_shape,
             self.device,
+            imitation_dataset_path=self.imitation_dataset_path,
         )
 
     def act(self, obs: TensorDict) -> torch.Tensor:
@@ -96,6 +99,7 @@ class Distillation:
         self.transition.actions = self.policy.act(obs).detach()
         self.transition.privileged_actions = self.policy.evaluate(obs).detach()
         # Record the observations
+        print("Observation keys:", obs.keys())
         self.transition.observations = obs
         return self.transition.actions
 
